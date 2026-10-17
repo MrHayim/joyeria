@@ -204,7 +204,16 @@ input:disabled{background:var(--surface2);color:var(--ink3)}
 .thumb img{width:100%;height:100%;object-fit:cover}
 .thumb.xs{width:40px;height:40px;border-radius:8px}
 .thumb.xs svg.i{width:18px;height:18px}
-.thumb.lg{width:100%;height:220px;border-radius:12px}
+.thumb.lg{width:100%;height:260px;border-radius:12px;cursor:zoom-in;position:relative}
+.thumb.lg img{object-fit:contain;background:#fff}
+.thumb.lg .cargando{position:absolute;right:10px;bottom:10px;color:var(--ink3)}
+.fotobtns{display:flex;gap:6px;flex-wrap:wrap;margin-top:8px}
+.fotobtns button{border:1px solid var(--line);background:#fff;border-radius:8px;padding:4px 10px;font-size:13px;cursor:pointer}
+.fotobtns button.on{border-color:var(--gold);color:var(--gold-ink);font-weight:600}
+#visor{position:fixed;inset:0;background:rgba(10,8,6,.94);z-index:300;display:none;align-items:center;justify-content:center;cursor:zoom-out}
+#visor.open{display:flex}
+#visor img{max-width:96vw;max-height:92vh;object-fit:contain;border-radius:6px}
+#visor .x{position:absolute;top:14px;right:14px;color:#fff;background:rgba(255,255,255,.12);border:0;width:44px;height:44px;border-radius:50%;font-size:22px;cursor:pointer}
 .thumb.lg svg.i{width:44px;height:44px}
 .lote .info{flex:1;min-width:0;display:flex;flex-direction:column;gap:3px}
 .lote .t{font-weight:600;line-height:1.25}
@@ -350,6 +359,7 @@ input:disabled{background:var(--surface2);color:var(--ink3)}
 </div>
 <div id="modal-bg"><div id="modal" role="dialog" aria-modal="true"></div></div>
 <div id="toast"></div>
+<div id="visor" data-act="cerrarVisor"><button class="x" aria-label="Cerrar">×</button><img alt="Foto"></div>
 
 <script>
 window.__errs = [];
@@ -450,7 +460,7 @@ const IS_GAS = typeof google !== 'undefined' && google.script && google.script.r
 const API_URL = ((window.APP_CONFIG || {}).apiUrl || '').trim();
 const MODO = IS_GAS ? 'gas' : (API_URL && !/[?&]demo\b/.test(location.search) && location.protocol !== 'file:' ? 'web' : 'demo');
 const S = {
-  view: 'inicio', lotes: [], clientes: [], cotizaciones: [], ventas: [], config: {}, usuario: '', urls: {}, thumbs: {},
+  view: 'inicio', fotos: {}, lotes: [], clientes: [], cotizaciones: [], ventas: [], config: {}, usuario: '', urls: {}, thumbs: {},
   demo: MODO === 'demo', cargado: false,
   inv: {q: '', tipo: '', material: '', ubic: '', agotados: false},
   vtab: 'ventas', vq: '', vmes: '', cq: '', repMes: hoy().slice(0, 7),
@@ -752,7 +762,7 @@ function modal(html, cls = '') {
   $('#modal').className = cls;
   $('#modal').innerHTML = `<button class="icon mx" data-act="cerrar" aria-label="Cerrar">${IC.x}</button>` + html;
   $('#modal-bg').classList.add('open'); document.body.classList.add('noscroll');
-  $('#modal-bg').scrollTop = 0;
+  $('#modal-bg').scrollTop = 0; $('#modal').scrollTop = 0;
 }
 function cerrarModal() { $('#modal-bg').classList.remove('open'); document.body.classList.remove('noscroll'); $('#modal').innerHTML = ''; S.form = null; if (S._resolver) { const r = S._resolver; S._resolver = null; r(null); } }
 function preguntar(titulo, texto, botones) {
@@ -914,8 +924,8 @@ function verLote(id) {
     <h2>${h(titulo(l))}</h2>
     <p class="mut" style="margin:0 0 14px">${[l.material, l.medida].filter(Boolean).map(h).join(' · ')} · ${h(l.id)}</p>
     <div class="grid g2 st">
-      <div>${thumbHTML(l, 'lg')}
-        ${fotos.length ? `<div class="row small" style="margin-top:8px">${fotos.map((f, i) => S.demo ? `<span class="mut">Foto ${i + 1}</span>` : `<a class="link" target="_blank" href="${HTTPS}drive.google.com/file/d/${h(f)}/view">Foto ${i + 1} ${IC.ext.replace('class="i"', 'class="i" style="width:14px;height:14px"')}</a>`).join(' ')}</div>` : ''}
+      <div><div class="thumb lg" id="lote-foto" data-act="verFotoGrande">${S.thumbs[l.id] ? `<img src="${S.thumbs[l.id]}" alt="">` : IC.joya}</div>
+        ${fotos.length > 1 ? `<div class="fotobtns">${fotos.map((f, i) => `<button data-act="loteFoto" data-f="${h(f)}" class="${i === 0 ? 'on' : ''}">Foto ${i + 1}</button>`).join('')}</div>` : ''}
       </div>
       <div class="stack" style="gap:8px">
         <div class="between"><span class="mut">Ubicación</span>${ubicHTML(l) || '—'}</div>
@@ -937,6 +947,19 @@ function verLote(id) {
       <button class="btn" data-act="editarLote" data-id="${l.id}">${IC.edit} Editar</button>
       ${l.disponible > 0 ? `<button class="btn pri" data-act="loteACot" data-id="${l.id}">${IC.cotizar} Agregar a cotización</button>` : ''}
     </div>`, 'wide');
+  if (fotos.length) mostrarFoto(fotos[0]);
+}
+// Trae la foto en buena calidad (la miniatura es solo para las listas)
+async function mostrarFoto(fileId) {
+  const box = $('#lote-foto'); if (!box) return;
+  box.dataset.f = fileId;
+  if (S.fotos[fileId]) { box.innerHTML = `<img src="${S.fotos[fileId]}" alt="">`; return; }
+  box.insertAdjacentHTML('beforeend', '<span class="spin cargando"></span>');
+  try {
+    const r = await api('foto', {fileId});
+    S.fotos[fileId] = r.dataUrl;
+    const b = $('#lote-foto'); if (b && b.dataset.f === fileId) b.innerHTML = `<img src="${r.dataUrl}" alt="">`;
+  } catch (e) { const sp = $('#lote-foto .cargando'); if (sp) sp.remove(); }
 }
 
 /* ---------- Formulario de lote ---------- */
@@ -1746,6 +1769,9 @@ const ACT = {
     cerrarModal(); render(); toast('Precios del día guardados');
   }),
   sesion: () => modalPersonas(),
+  loteFoto: el => { $$('.fotobtns button').forEach(b => b.classList.toggle('on', b === el)); mostrarFoto(el.dataset.f); },
+  verFotoGrande: el => { const img = $('img', el); if (!img) return; const v = $('#visor'); $('img', v).src = img.src; v.classList.add('open'); },
+  cerrarVisor: () => $('#visor').classList.remove('open'),
   accesoElegir: el => { const id = el.dataset.id; if (Acceso.sesiones[id]) { Acceso.activa = id; Acceso.guardar(); return entrar({token: Acceso.sesiones[id].token, usuario: {id, nombre: Acceso.sesiones[id].nombre}}); } mostrarAcceso(S._estado, id); },
   accesoVolver: () => mostrarAcceso(S._estado),
   accesoCodigo: () => mostrarAcceso(S._estado, '__codigo'),
@@ -1954,7 +1980,7 @@ const INP = {
   fotosSel: async t => {
     const files = [...t.files]; t.value = '';
     for (const f of files) {
-      try { const img = await cargarImagen(f); S.form.nuevasFotos.push({full: reducir(img, 1600, .82), thumb: reducir(img, 220, .72)}); }
+      try { const img = await cargarImagen(f); S.form.nuevasFotos.push({full: reducir(img, 1600, .82), thumb: reducir(img, 360, .8)}); }
       catch (e) { toast(e.message, 'err'); }
     }
     $('#f-fotos').innerHTML = fotosForm(S.form.loteId ? loteDe(S.form.loteId) : null);
@@ -2015,6 +2041,7 @@ document.addEventListener('input', e => { const t = e.target.closest('[data-inp]
 document.addEventListener('change', e => { const t = e.target; if (t.type === 'file' && t.dataset.inp && INP[t.dataset.inp]) INP[t.dataset.inp](t, e); });
 document.addEventListener('keydown', e => {
   const t = e.target;
+  if (e.key === 'Escape' && $('#visor.open')) return $('#visor').classList.remove('open');
   if (e.key === 'Escape') { if ($('.ac-list.open')) return cerrarAc(); if ($('#modal-bg.open')) return cerrarModal(); }
   if (t.dataset && t.dataset.kbd === 'pinEnter' && e.key === 'Enter') { e.preventDefault(); const b = document.querySelector(`[data-act="${t.dataset.go}"]`); if (b) b.click(); return; }
   if (t.dataset && t.dataset.kbd === 'lista' && e.key === 'Enter') { e.preventDefault(); ACT.listaAgregar({dataset: {k: t.dataset.k}}); return; }
@@ -2192,6 +2219,7 @@ const Demo = (() => {
       return {usuarios: pub()};
     },
     miniaturas: () => db.thumbs,
+    foto: d => { const l = db.lotes.find(x => String(x.fotos || '').includes(d.fileId)); if (!l || !db.thumbs[l.id]) throw new Error('No encontré esa foto.'); return {dataUrl: db.thumbs[l.id]}; },
     guardarConfig: d => { db.config[d.clave] = d.valor; return d.valor; },
     guardarLote: (d, u) => { const l = d.lote; if (!l.id) { l.id = next('L'); l.creadoPor = u; l.creadoEn = ahora(); } else { const p = find(db.lotes, l.id); if (p) { l.creadoPor = p.creadoPor; l.creadoEn = p.creadoEn; l.fotos = p.fotos; } } l.actualizadoEn = ahora(); l.activo = l.activo || 'si'; return up(db.lotes, l); },
     eliminarLote: d => { const l = find(db.lotes, d.id); l.activo = 'no'; return l; },
