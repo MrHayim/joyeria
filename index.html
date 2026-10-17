@@ -213,6 +213,7 @@ input:disabled{background:var(--surface2);color:var(--ink3)}
 #visor{position:fixed;inset:0;background:rgba(10,8,6,.94);z-index:300;display:none;align-items:center;justify-content:center;cursor:zoom-out}
 #visor.open{display:flex}
 #visor img{max-width:96vw;max-height:92vh;object-fit:contain;border-radius:6px}
+#visor .orig{position:absolute;bottom:22px;left:50%;transform:translateX(-50%);background:rgba(255,255,255,.92)}
 #visor .x{position:absolute;top:14px;right:14px;color:#fff;background:rgba(255,255,255,.12);border:0;width:44px;height:44px;border-radius:50%;font-size:22px;cursor:pointer}
 .thumb.lg svg.i{width:44px;height:44px}
 .lote .info{flex:1;min-width:0;display:flex;flex-direction:column;gap:3px}
@@ -359,7 +360,7 @@ input:disabled{background:var(--surface2);color:var(--ink3)}
 </div>
 <div id="modal-bg"><div id="modal" role="dialog" aria-modal="true"></div></div>
 <div id="toast"></div>
-<div id="visor" data-act="cerrarVisor"><button class="x" aria-label="Cerrar">×</button><img alt="Foto"></div>
+<div id="visor" data-act="cerrarVisor"><button class="x" aria-label="Cerrar">×</button><img alt="Foto"><button class="orig btn sm hide" data-act="verOriginal">Ver en máxima calidad</button></div>
 
 <script>
 window.__errs = [];
@@ -434,6 +435,23 @@ const ls = {
   set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) {} },
   del(k) { try { localStorage.removeItem(k); } catch (e) {} }
 };
+// Almacén grande del dispositivo (fotos, miniaturas y copia de datos); si no está disponible usa localStorage
+const KV = (() => {
+  let dbp = null;
+  const abrir = () => dbp || (dbp = new Promise((res, rej) => {
+    try { const r = indexedDB.open('ahj', 1); r.onupgradeneeded = () => r.result.createObjectStore('kv'); r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error); }
+    catch (e) { rej(e); }
+  }));
+  const op = (modo, fn) => abrir().then(db => new Promise((res, rej) => {
+    const t = db.transaction('kv', modo); const q = fn(t.objectStore('kv'));
+    t.oncomplete = () => res(q ? q.result : undefined); t.onerror = () => rej(t.error); t.onabort = () => rej(t.error);
+  }));
+  return {
+    get: k => op('readonly', st => st.get(k)).catch(() => ls.get('kv_' + k, null)),
+    set: (k, v) => op('readwrite', st => st.put(v, k)).catch(() => ls.set('kv_' + k, v)),
+    del: k => op('readwrite', st => st.delete(k)).catch(() => ls.del('kv_' + k))
+  };
+})();
 const telWa = t => { let d = String(t || '').replace(/\D/g, ''); if (d.length === 10) d = '52' + d; return d; };
 
 /* ═════════════════════════ Configuración por defecto ═════════════════════════ */
@@ -694,7 +712,7 @@ function nLote(l) {
   const cu = l.costoUnit === '' || l.costoUnit === null || l.costoUnit === undefined ? null : num(l.costoUnit);
   return {...l, id: String(l.id), pesoProm: num(l.pesoProm), cantidad: num(l.cantidad), disponible: num(l.disponible),
     costoTotal: l.costoTotal === '' || l.costoTotal == null ? null : num(l.costoTotal), costoUnit: cu,
-    tipoCosto: l.tipoCosto || 'real', ubic: pj(l.ubicJSON, null), fotosArr: pj(l.fotos, []),
+    tipoCosto: l.tipoCosto || 'real', ubic: pj(l.ubicJSON, null), fotosArr: pj(l.fotos, []).map(f => typeof f === 'string' ? {o: f, m: ''} : f),
     activo: !(l.activo === 'no' || l.activo === false), unidad: l.unidad || 'pieza', medida: String(l.medida ?? ''), notas: String(l.notas ?? '')};
 }
 function nVenta(v) {
@@ -924,8 +942,8 @@ function verLote(id) {
     <h2>${h(titulo(l))}</h2>
     <p class="mut" style="margin:0 0 14px">${[l.material, l.medida].filter(Boolean).map(h).join(' · ')} · ${h(l.id)}</p>
     <div class="grid g2 st">
-      <div><div class="thumb lg" id="lote-foto" data-act="verFotoGrande">${S.thumbs[l.id] ? `<img src="${S.thumbs[l.id]}" alt="">` : IC.joya}</div>
-        ${fotos.length > 1 ? `<div class="fotobtns">${fotos.map((f, i) => `<button data-act="loteFoto" data-f="${h(f)}" class="${i === 0 ? 'on' : ''}">Foto ${i + 1}</button>`).join('')}</div>` : ''}
+      <div><div class="thumb lg" id="lote-foto" data-act="verFotoGrande" data-lote="${l.id}">${S.thumbs[l.id] ? `<img src="${S.thumbs[l.id]}" alt="">` : IC.joya}</div>
+        ${fotos.length > 1 ? `<div class="fotobtns">${fotos.map((f, i) => `<button data-act="loteFoto" data-i="${i}" class="${i === 0 ? 'on' : ''}">Foto ${i + 1}</button>`).join('')}</div>` : ''}
       </div>
       <div class="stack" style="gap:8px">
         <div class="between"><span class="mut">Ubicación</span>${ubicHTML(l) || '—'}</div>
@@ -949,16 +967,25 @@ function verLote(id) {
     </div>`, 'wide');
   if (fotos.length) mostrarFoto(fotos[0]);
 }
-// Trae la foto en buena calidad (la miniatura es solo para las listas)
-async function mostrarFoto(fileId) {
-  const box = $('#lote-foto'); if (!box) return;
-  box.dataset.f = fileId;
-  if (S.fotos[fileId]) { box.innerHTML = `<img src="${S.fotos[fileId]}" alt="">`; return; }
+// Muestra la vista rápida de la foto (≈80 KB). Se guarda en el dispositivo: la segunda vez abre al instante.
+async function traerFoto(fileId) {
+  if (S.fotos[fileId]) return S.fotos[fileId];
+  const guardada = await KV.get('foto:' + fileId);
+  if (guardada) return (S.fotos[fileId] = guardada);
+  const r = await api('foto', {fileId});
+  S.fotos[fileId] = r.dataUrl;
+  KV.set('foto:' + fileId, r.dataUrl);
+  return r.dataUrl;
+}
+async function mostrarFoto(f) {
+  const box = $('#lote-foto'); if (!box || !f) return;
+  const id = f.m || f.o;
+  box.dataset.f = id; box.dataset.o = f.o;
+  if (S.fotos[id]) { box.innerHTML = `<img src="${S.fotos[id]}" alt="">`; return; }
   box.insertAdjacentHTML('beforeend', '<span class="spin cargando"></span>');
   try {
-    const r = await api('foto', {fileId});
-    S.fotos[fileId] = r.dataUrl;
-    const b = $('#lote-foto'); if (b && b.dataset.f === fileId) b.innerHTML = `<img src="${r.dataUrl}" alt="">`;
+    const url = await traerFoto(id);
+    const b = $('#lote-foto'); if (b && b.dataset.f === id) b.innerHTML = `<img src="${url}" alt="">`;
   } catch (e) { const sp = $('#lote-foto .cargando'); if (sp) sp.remove(); }
 }
 
@@ -1048,7 +1075,7 @@ function formLote(id) {
 function fotosForm(l) {
   const exist = l ? (l.fotosArr || []) : [];
   const nuevas = S.form ? S.form.nuevasFotos : [];
-  return exist.map((f, i) => `<div class="foto">${i === 0 && S.thumbs[l.id] ? `<img src="${S.thumbs[l.id]}" alt="">` : `Foto ${i + 1}`}<button type="button" data-act="quitarFoto" data-f="${h(f)}" title="Quitar">×</button></div>`).join('')
+  return exist.map((f, i) => `<div class="foto">${i === 0 && S.thumbs[l.id] ? `<img src="${S.thumbs[l.id]}" alt="">` : `Foto ${i + 1}`}<button type="button" data-act="quitarFoto" data-f="${h(f.o)}" title="Quitar">×</button></div>`).join('')
     + nuevas.map((n, i) => `<div class="foto"><img src="${n.thumb}" alt=""><button type="button" data-act="quitarNueva" data-i="${i}" title="Quitar">×</button></div>`).join('')
     + `<button type="button" class="foto addfoto" data-act="elegirFotos">${IC.foto}<span>Agregar</span></button>`;
 }
@@ -1059,6 +1086,13 @@ function cargarImagen(file) {
     fr.onerror = () => rej(new Error('No se pudo leer el archivo'));
     fr.readAsDataURL(file);
   });
+}
+// Miniatura para listas: pequeña (≈10 KB) y siempre por debajo del límite de una celda de la hoja
+function miniatura(img) {
+  let t = reducir(img, 240, .72);
+  if (t.length > 30000) t = reducir(img, 200, .6);
+  if (t.length > 30000) t = reducir(img, 160, .5);
+  return t;
 }
 function reducir(img, max, q, tipo = 'image/jpeg', fondo = '#fff') {
   const k = Math.min(1, max / Math.max(img.width, img.height));
@@ -1109,8 +1143,8 @@ async function guardarLote(btn) {
     if (raw._offline && fotos.length) { fotos.length = 0; toast('Sin conexión: la compra se guardó, pero las fotos no. Agrégalas cuando regrese la señal.', 'err'); }
     for (let i = 0; i < fotos.length; i++) {
       toast(`Subiendo foto ${i + 1} de ${fotos.length}…`);
-      const x = await api('subirFoto', {loteId: r.id, dataUrl: fotos[i].full, thumb: fotos[i].thumb});
-      upsert(S.lotes, nLote(x.lote)); if (x.thumb) S.thumbs[r.id] = x.thumb;
+      const x = await api('subirFoto', {loteId: r.id, dataUrl: fotos[i].full, media: fotos[i].media, thumb: fotos[i].thumb});
+      upsert(S.lotes, nLote(x.lote)); if (x.thumb) { S.thumbs[r.id] = x.thumb; KV.set('thumbs', S.thumbs); }
     }
     cerrarModal();
     if (!raw._offline || !fotos.length) toast(raw._offline ? 'Sin conexión: guardado en este dispositivo, se subirá después' : (orig ? 'Cambios guardados' : `Compra registrada como ${r.id}`));
@@ -1769,8 +1803,18 @@ const ACT = {
     cerrarModal(); render(); toast('Precios del día guardados');
   }),
   sesion: () => modalPersonas(),
-  loteFoto: el => { $$('.fotobtns button').forEach(b => b.classList.toggle('on', b === el)); mostrarFoto(el.dataset.f); },
-  verFotoGrande: el => { const img = $('img', el); if (!img) return; const v = $('#visor'); $('img', v).src = img.src; v.classList.add('open'); },
+  loteFoto: el => { $$('.fotobtns button').forEach(b => b.classList.toggle('on', b === el)); const l = loteDe($('#lote-foto').dataset.lote); mostrarFoto(l.fotosArr[+el.dataset.i]); },
+  verFotoGrande: el => {
+    const img = $('img', el); if (!img) return;
+    const v = $('#visor'); $('img', v).src = img.src; v.dataset.o = el.dataset.o || '';
+    const btn = $('.orig', v); btn.classList.toggle('hide', !el.dataset.o || S.demo || el.dataset.o === el.dataset.f); btn.disabled = false; btn.textContent = 'Ver en máxima calidad';
+    v.classList.add('open');
+  },
+  verOriginal: (el, e) => {
+    e.stopPropagation(); const v = $('#visor'); el.disabled = true; el.innerHTML = '<span class="spin"></span> Cargando…';
+    api('foto', {fileId: v.dataset.o}).then(r => { $('img', v).src = r.dataUrl; el.classList.add('hide'); })
+      .catch(err => { el.disabled = false; el.textContent = err.red ? 'Sin conexión' : 'No se pudo cargar'; });
+  },
   cerrarVisor: () => $('#visor').classList.remove('open'),
   accesoElegir: el => { const id = el.dataset.id; if (Acceso.sesiones[id]) { Acceso.activa = id; Acceso.guardar(); return entrar({token: Acceso.sesiones[id].token, usuario: {id, nombre: Acceso.sesiones[id].nombre}}); } mostrarAcceso(S._estado, id); },
   accesoVolver: () => mostrarAcceso(S._estado),
@@ -1849,7 +1893,7 @@ const ACT = {
   quitarNueva: el => { S.form.nuevasFotos.splice(+el.dataset.i, 1); $('#f-fotos').innerHTML = fotosForm(S.form.loteId ? loteDe(S.form.loteId) : null); },
   quitarFoto: async el => {
     if (!window.confirm('¿Quitar esta foto? Se mandará a la papelera de Drive.')) return;
-    try { const r = await api('quitarFoto', {loteId: S.form.loteId, fileId: el.dataset.f}); upsert(S.lotes, nLote(r.lote)); if (r.quitarMiniatura) delete S.thumbs[S.form.loteId]; $('#f-fotos').innerHTML = fotosForm(loteDe(S.form.loteId)); toast('Foto quitada'); } catch (e) { toast(e.message, 'err'); }
+    try { const r = await api('quitarFoto', {loteId: S.form.loteId, fileId: el.dataset.f}); upsert(S.lotes, nLote(r.lote)); if (r.quitarMiniatura) { delete S.thumbs[S.form.loteId]; KV.set('thumbs', S.thumbs); } $('#f-fotos').innerHTML = fotosForm(loteDe(S.form.loteId)); toast('Foto quitada'); } catch (e) { toast(e.message, 'err'); }
   },
 
   // Cotizar
@@ -1980,7 +2024,7 @@ const INP = {
   fotosSel: async t => {
     const files = [...t.files]; t.value = '';
     for (const f of files) {
-      try { const img = await cargarImagen(f); S.form.nuevasFotos.push({full: reducir(img, 1600, .82), thumb: reducir(img, 360, .8)}); }
+      try { const img = await cargarImagen(f); S.form.nuevasFotos.push({full: reducir(img, 1600, .82), media: reducir(img, 900, .72), thumb: miniatura(img)}); }
       catch (e) { toast(e.message, 'err'); }
     }
     $('#f-fotos').innerHTML = fotosForm(S.form.loteId ? loteDe(S.form.loteId) : null);
@@ -2062,16 +2106,16 @@ function guardarSnap() {
   clearTimeout(_snapT);
   _snapT = setTimeout(() => {
     const limpio = (arr, quita) => arr.map(x => { const o = {...x}; quita.forEach(k => delete o[k]); return o; });
-    ls.set('ahj_snap', {v: 1, t: nowISO(), usuario: S.usuario, yo: S.yo, usuarios: S.usuarios, config: S.config, urls: S.urls,
+    KV.set('snap', {v: 1, t: nowISO(), usuario: S.usuario, yo: S.yo, usuarios: S.usuarios, config: S.config, urls: S.urls,
       lotes: limpio(S.lotes, ['ubic', 'fotosArr']), clientes: S.clientes, cotizaciones: limpio(S.cotizaciones, ['items']), ventas: limpio(S.ventas, ['items'])});
   }, 800);
 }
-function aplicarSnap() {
-  const d = ls.get('ahj_snap', null);
+async function aplicarSnap() {
+  const d = await KV.get('snap');
   if (!d || d.usuario !== Acceso.activa) return false;
   S.lotes = d.lotes.map(nLote); S.clientes = d.clientes.map(nCli); S.cotizaciones = d.cotizaciones.map(nCot); S.ventas = d.ventas.map(nVenta);
   S.config = d.config || {}; S.usuario = d.usuario; S.urls = d.urls || {}; S.yo = d.yo || {}; S.usuarios = d.usuarios || [];
-  S.thumbs = ls.get('ahj_thumbs', {}) || {};
+  S.thumbs = (await KV.get('thumbs')) || {};
   S.cargado = true; S.cargaT = Date.now(); S.desdeSnap = d.t;
   if (!S.cot) S.cot = Object.assign(nuevaCot(), ls.get('ahj_cot', {}) || {});
   if (!Array.isArray(S.cot.items)) S.cot.items = [];
@@ -2079,6 +2123,19 @@ function aplicarSnap() {
   marcarRed(true); render(); renderRed();
   toast(`Sin conexión: mostrando lo guardado el ${fmtFecha(d.t, 1)}`);
   return true;
+}
+
+// Miniaturas: se guardan en el dispositivo y solo se descargan las nuevas
+async function actualizarMiniaturas() {
+  if (!S.demo && !Object.keys(S.thumbs).length) S.thumbs = (await KV.get('thumbs')) || {};
+  try {
+    const r = await api('miniaturas', {tengo: Object.keys(S.thumbs)});
+    const ids = new Set(r.ids || []);
+    Object.keys(S.thumbs).forEach(k => { if (!ids.has(k)) delete S.thumbs[k]; });
+    Object.assign(S.thumbs, r.nuevas || {});
+    if (!S.demo) KV.set('thumbs', S.thumbs);
+  } catch (e) { /* sin conexión: se quedan las guardadas */ }
+  if (['inventario', 'avisos', 'inicio'].includes(S.view) && !$('#modal-bg.open')) render(); else if (S.view === 'cotizar') renderCotItems();
 }
 
 /* ═════════════════════════ Carga ═════════════════════════ */
@@ -2104,11 +2161,11 @@ async function cargar(silencio) {
     renderRed();
     if (!silencio && Cola.items.length) setTimeout(sincronizar, 500);
     guardarSnap();
-    api('miniaturas').then(t => { S.thumbs = t || {}; if (!S.demo) ls.set('ahj_thumbs', S.thumbs); if (['inventario', 'avisos', 'inicio'].includes(S.view) && !$('#modal-bg.open')) render(); else if (S.view === 'cotizar') renderCotItems(); }).catch(() => {});
+    actualizarMiniaturas();
   } catch (e) {
     clearTimeout(aviso);
     if (silencio || e.sesion) return;
-    if (e.red && !S.cargado && aplicarSnap()) return;
+    if (e.red && !S.cargado && await aplicarSnap()) return;
     errorCarga(e);
   }
 }
@@ -2218,13 +2275,13 @@ const Demo = (() => {
       if (yo.admin && x.id !== u) { if (x.admin !== undefined) r.admin = x.admin; if (x.activo !== undefined) r.activo = x.activo; }
       return {usuarios: pub()};
     },
-    miniaturas: () => db.thumbs,
+    miniaturas: d => { const t = new Set(d.tengo || []); const nuevas = {}; Object.keys(db.thumbs).forEach(k => { if (!t.has(k)) nuevas[k] = db.thumbs[k]; }); return {nuevas, ids: Object.keys(db.thumbs)}; },
     foto: d => { const l = db.lotes.find(x => String(x.fotos || '').includes(d.fileId)); if (!l || !db.thumbs[l.id]) throw new Error('No encontré esa foto.'); return {dataUrl: db.thumbs[l.id]}; },
     guardarConfig: d => { db.config[d.clave] = d.valor; return d.valor; },
     guardarLote: (d, u) => { const l = d.lote; if (!l.id) { l.id = next('L'); l.creadoPor = u; l.creadoEn = ahora(); } else { const p = find(db.lotes, l.id); if (p) { l.creadoPor = p.creadoPor; l.creadoEn = p.creadoEn; l.fotos = p.fotos; } } l.actualizadoEn = ahora(); l.activo = l.activo || 'si'; return up(db.lotes, l); },
     eliminarLote: d => { const l = find(db.lotes, d.id); l.activo = 'no'; return l; },
-    subirFoto: d => { const l = find(db.lotes, d.loteId); const f = pj(l.fotos, []); f.push('demo-' + uid()); l.fotos = JSON.stringify(f); if (f.length === 1) db.thumbs[l.id] = d.thumb; return {lote: l, thumb: f.length === 1 ? d.thumb : null}; },
-    quitarFoto: d => { const l = find(db.lotes, d.loteId); const f = pj(l.fotos, []); const i = f.indexOf(d.fileId); if (i >= 0) f.splice(i, 1); l.fotos = JSON.stringify(f); if (i === 0) delete db.thumbs[l.id]; return {lote: l, quitarMiniatura: i === 0}; },
+    subirFoto: d => { const l = find(db.lotes, d.loteId); const f = pj(l.fotos, []); f.push({o: 'demo-' + uid(), m: ''}); l.fotos = JSON.stringify(f); if (f.length === 1) db.thumbs[l.id] = d.thumb; return {lote: l, thumb: f.length === 1 ? d.thumb : null}; },
+    quitarFoto: d => { const l = find(db.lotes, d.loteId); const f = pj(l.fotos, []); const i = f.findIndex(x => (typeof x === 'string' ? x : x.o) === d.fileId); if (i >= 0) f.splice(i, 1); l.fotos = JSON.stringify(f); if (i === 0) delete db.thumbs[l.id]; return {lote: l, quitarMiniatura: i === 0}; },
     guardarCliente: d => { const c = d.cliente; if (!c.id) { c.id = next('C'); c.creadoEn = ahora(); } return up(db.clientes, c); },
     eliminarCliente: d => { db.clientes = db.clientes.filter(c => String(c.id) !== String(d.id)); return {id: d.id}; },
     guardarCotizacion: (d, u) => { const c = d.cot; if (!c.id) { c.id = next('COT'); c.fecha = ahora(); c.usuario = u; } else { const p = find(db.cotizaciones, c.id); if (p) { c.fecha = p.fecha; c.usuario = p.usuario; } } c.actualizadoEn = ahora(); return up(db.cotizaciones, c); },

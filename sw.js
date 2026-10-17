@@ -1,6 +1,6 @@
 // Guarda la app en el dispositivo para que abra aunque no haya señal.
 // Al publicar cambios, sube este número para que todos reciban la versión nueva.
-const VERSION = 'joyeria-v2';
+const VERSION = 'joyeria-v3';
 const BASE = ['./', './index.html', './config.js', './manifest.webmanifest', './icon-180.png', './icon-192.png', './icon-512.png'];
 
 self.addEventListener('install', e => {
